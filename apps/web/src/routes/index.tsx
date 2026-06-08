@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '#/lib/api-client.js'
 import { Button } from '#/components/ui/button.js'
 import { Input } from '#/components/ui/input.js'
 import { Label } from '#/components/ui/label.js'
 import { Wallet, Send, History, UserPlus, RefreshCw, ArrowRightLeft, CheckCircle2, AlertCircle, ChevronDown, Search } from 'lucide-react'
-import type { WalletAccount, LedgerHistoryItem } from '@repo/shared-types'
 
 export const Route = createFileRoute('/')({
   component: WalletDashboard,
@@ -114,15 +114,8 @@ function SearchDropdown({ options, value, onChange, placeholder = 'Select option
 }
 
 function WalletDashboard() {
-  const [wallets, setWallets] = useState<WalletAccount[]>([])
+  const queryClient = useQueryClient()
   const [activeAccountId, setActiveAccountId] = useState<string>('')
-  const [activeBalance, setActiveBalance] = useState<number | null>(null)
-  const [activeHistory, setActiveHistory] = useState<LedgerHistoryItem[]>([])
-
-  // Loading states
-  const [loadingWallets, setLoadingWallets] = useState(true)
-  const [loadingDetails, setLoadingDetails] = useState(false)
-  const [actionLoading, setActionLoading] = useState(false)
 
   // Message states
   const [error, setError] = useState<string | null>(null)
@@ -136,140 +129,130 @@ function WalletDashboard() {
   const [toAccountId, setToAccountId] = useState('')
   const [transferAmount, setTransferAmount] = useState('')
 
-  // Initial load
-  const fetchWallets = async (selectFirst = false) => {
-    try {
-      setLoadingWallets(true)
-      const data = await api.getWallets()
-      setWallets(data)
-      if (selectFirst && data.length > 0) {
-        setActiveAccountId(data[0].accountId)
-      }
-    } catch (err: any) {
-      console.error(err)
-      const errorMsg = err?.message || ''
-      if (
-        errorMsg.toLowerCase().includes('database') ||
-        errorMsg.toLowerCase().includes('sqlite') ||
-        errorMsg.toLowerCase().includes('prisma') ||
-        errorMsg.toLowerCase().includes('table') ||
-        errorMsg.toLowerCase().includes('relation') ||
-        errorMsg.toLowerCase().includes('dev.db')
-      ) {
-        setError('Failed to fetch wallets: Database file not found or not initialized. Please ensure "apps/be/dev.db" is created and configured by running "pnpm --filter be db:push" (or "docker compose exec be pnpm --filter be db:push" if running in Docker).')
-      } else if (errorMsg.includes('Failed to fetch') || errorMsg.includes('fetch failed')) {
-        setError('Failed to fetch wallets. Unable to connect to the backend server. Make sure it is running.')
-      } else {
-        setError(`Failed to fetch wallets: ${errorMsg}`)
-      }
-    } finally {
-      setLoadingWallets(false)
+  // Helper to construct database / network fallback error messages
+  const getFriendlyErrorMessage = (err: any, prefix = 'Error') => {
+    if (!err) return null
+    const errorMsg = err.message || ''
+    if (
+      errorMsg.toLowerCase().includes('database') ||
+      errorMsg.toLowerCase().includes('sqlite') ||
+      errorMsg.toLowerCase().includes('prisma') ||
+      errorMsg.toLowerCase().includes('table') ||
+      errorMsg.toLowerCase().includes('relation') ||
+      errorMsg.toLowerCase().includes('dev.db')
+    ) {
+      return `${prefix}: Database file not found or not initialized. Please ensure "apps/be/dev.db" is created and configured by running "pnpm --filter be db:push" (or "docker compose exec be pnpm --filter be db:push" if running in Docker).`
     }
+    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('fetch failed')) {
+      return `${prefix}. Unable to connect to the backend server. Make sure it is running.`
+    }
+    return `${prefix}: ${errorMsg}`
   }
 
-  useEffect(() => {
-    fetchWallets(true)
-  }, [])
+  // Fetch wallets query
+  const { data: wallets = [], isLoading: loadingWallets, error: walletsError } = useQuery({
+    queryKey: ['wallets'],
+    queryFn: () => api.getWallets(),
+    retry: false,
+  })
 
-  // Fetch active wallet balance & history
-  const fetchActiveWalletDetails = async (accountId: string) => {
-    if (!accountId) return
-    try {
-      setLoadingDetails(true)
-      const balanceData = await api.getWalletBalance(accountId)
-      const historyData = await api.getWalletHistory(accountId)
-      setActiveBalance(balanceData.balance)
-      setActiveHistory(historyData)
-    } catch (err: any) {
-      console.error(err)
-      const errorMsg = err?.message || ''
-      if (
-        errorMsg.toLowerCase().includes('database') ||
-        errorMsg.toLowerCase().includes('sqlite') ||
-        errorMsg.toLowerCase().includes('prisma') ||
-        errorMsg.toLowerCase().includes('table') ||
-        errorMsg.toLowerCase().includes('relation') ||
-        errorMsg.toLowerCase().includes('dev.db')
-      ) {
-        setError('Failed to load wallet details: Database file not found or not initialized. Please ensure "apps/be/dev.db" is created and configured by running "pnpm --filter be db:push" (or "docker compose exec be pnpm --filter be db:push" if running in Docker).')
-      } else {
-        setError(errorMsg || 'Failed to load wallet details.')
+  // Select the first wallet automatically on load if none is active
+  useEffect(() => {
+    if (wallets.length > 0 && !activeAccountId) {
+      setActiveAccountId(wallets[0].accountId)
+    }
+  }, [wallets, activeAccountId])
+
+  // Fetch active wallet details (balance and history) query
+  const { data: activeDetails, isLoading: loadingDetails, error: detailsError, refetch: refetchDetails } = useQuery({
+    queryKey: ['walletDetails', activeAccountId],
+    queryFn: async () => {
+      const [balanceData, historyData] = await Promise.all([
+        api.getWalletBalance(activeAccountId),
+        api.getWalletHistory(activeAccountId),
+      ])
+      return {
+        balance: balanceData.balance,
+        history: historyData,
       }
-      setActiveBalance(null)
-      setActiveHistory([])
-    } finally {
-      setLoadingDetails(false)
-    }
-  }
+    },
+    enabled: !!activeAccountId,
+    retry: false,
+  })
 
-  useEffect(() => {
-    if (activeAccountId) {
-      fetchActiveWalletDetails(activeAccountId)
-    } else {
-      setActiveBalance(null)
-      setActiveHistory([])
-    }
-  }, [activeAccountId])
+  const activeBalance = activeDetails?.balance ?? null
+  const activeHistory = activeDetails?.history ?? []
 
-  // Handle wallet creation
-  const handleCreateWallet = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newAccountId.trim()) return
-    setActionLoading(true)
-    setError(null)
-    setSuccess(null)
-
-    try {
-      const initial = parseFloat(newInitialBalance) || 0
-      const created = await api.createWallet(newAccountId.trim(), initial)
+  // Create Wallet Mutation
+  const createWalletMutation = useMutation({
+    mutationFn: async ({ accountId, initialBalance }: { accountId: string; initialBalance: number }) => {
+      return api.createWallet(accountId, initialBalance)
+    },
+    onSuccess: (created) => {
       setSuccess(`Wallet account '${created.accountId}' successfully created!`)
       setNewAccountId('')
       setNewInitialBalance('')
-
-      // Refresh list and select the new wallet
-      await fetchWallets(false)
+      queryClient.invalidateQueries({ queryKey: ['wallets'] })
       setActiveAccountId(created.accountId)
-    } catch (err: any) {
+    },
+    onError: (err: any) => {
       setError(err?.message || 'Failed to create wallet.')
-    } finally {
-      setActionLoading(false)
     }
-  }
+  })
 
-  // Handle fund transfer
-  const handleTransfer = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!activeAccountId || !toAccountId.trim() || !transferAmount) return
-    setActionLoading(true)
-    setError(null)
-    setSuccess(null)
-
-    try {
-      const amount = parseFloat(transferAmount)
-      const transactionId = generateUuidV4()
-      const result = await api.transfer({
-        transactionId,
-        fromAccountId: activeAccountId,
-        toAccountId: toAccountId.trim(),
-        amount
-      })
-
+  // Transfer Mutation
+  const transferMutation = useMutation({
+    mutationFn: async (payload: { transactionId: string; fromAccountId: string; toAccountId: string; amount: number }) => {
+      return api.transfer(payload)
+    },
+    onSuccess: (result, variables) => {
       if (result.idempotent) {
         setSuccess(`Idempotent response: transaction '${result.transactionId}' was already processed successfully!`)
       } else {
-        setSuccess(`Transfer of $${amount.toFixed(2)} to '${toAccountId.trim()}' was successful!`)
+        setSuccess(`Transfer of $${variables.amount.toFixed(2)} to '${variables.toAccountId}' was successful!`)
         setToAccountId('')
         setTransferAmount('')
       }
-
-      // Refresh current wallet details
-      await fetchActiveWalletDetails(activeAccountId)
-    } catch (err: any) {
+      queryClient.invalidateQueries({ queryKey: ['walletDetails', activeAccountId] })
+      queryClient.invalidateQueries({ queryKey: ['wallets'] })
+    },
+    onError: (err: any) => {
       setError(err?.message || 'Transfer failed.')
-    } finally {
-      setActionLoading(false)
     }
+  })
+
+  const actionLoading = createWalletMutation.isPending || transferMutation.isPending
+
+  // Handle wallet creation submit
+  const handleCreateWallet = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newAccountId.trim()) return
+    setError(null)
+    setSuccess(null)
+    const initial = parseFloat(newInitialBalance) || 0
+    createWalletMutation.mutate({ accountId: newAccountId.trim(), initialBalance: initial })
   }
+
+  // Handle fund transfer submit
+  const handleTransfer = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!activeAccountId || !toAccountId.trim() || !transferAmount) return
+    setError(null)
+    setSuccess(null)
+    const amount = parseFloat(transferAmount)
+    const transactionId = generateUuidV4()
+    transferMutation.mutate({
+      transactionId,
+      fromAccountId: activeAccountId,
+      toAccountId: toAccountId.trim(),
+      amount
+    })
+  }
+
+  // Derive dynamic global error message from queries
+  const displayedError = error 
+    || getFriendlyErrorMessage(walletsError, 'Failed to fetch wallets')
+    || getFriendlyErrorMessage(detailsError, 'Failed to load wallet details')
 
   return (
     <div className="space-y-10 rise-in">
@@ -281,10 +264,10 @@ function WalletDashboard() {
       </div>
 
       {/* Global Toast Error/Success */}
-      {error && (
+      {displayedError && (
         <div className="p-4 rounded-xl bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 border border-red-200/50 dark:border-red-900/30 flex items-center gap-3 text-sm animate-shake">
           <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>{error}</span>
+          <span>{displayedError}</span>
         </div>
       )}
       {success && (
@@ -320,7 +303,7 @@ function WalletDashboard() {
                     setSuccess(null)
                   }}
                   placeholder="Select active wallet..."
-                />
+                 />
               ) : (
                 <div className="text-xs text-[var(--sea-ink-soft)] italic py-1">
                   No accounts found. Create one below.
@@ -336,7 +319,7 @@ function WalletDashboard() {
                 variant="outline"
                 size="icon"
                 disabled={loadingDetails || !activeAccountId}
-                onClick={() => fetchActiveWalletDetails(activeAccountId)}
+                onClick={() => refetchDetails()}
                 className="h-8 w-8 rounded-full border-[var(--line)] text-[var(--sea-ink-soft)] cursor-pointer"
                 title="Refresh Details"
               >
