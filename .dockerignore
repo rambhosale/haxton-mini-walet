@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+apps/web/.output
+apps/be/dist
+.git
+.vscode
+.env
+db.sqlite
+dev.db
+*.log

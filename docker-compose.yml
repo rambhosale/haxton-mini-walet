@@ -1,0 +1,44 @@
+services:
+  be:
+    container_name: my-app-be
+    build:
+      context: .
+      dockerfile: apps/be/Dockerfile
+      target: ${DOCKER_STAGE:-development}
+    ports:
+      - "${BE_PORT:-3001}:${BE_PORT:-3001}"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${BE_PORT:-3001}
+      - DATABASE_URL=file:./dev.db
+      - BETTER_AUTH_SECRET=a35a4ed0661c8f7897d3ddc9ee40a5f992a1cbabefad8eadb7ad6d5620cc61ec
+      - BETTER_AUTH_URL=http://localhost:${BE_PORT:-3001}
+      - CI=true
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/be/node_modules
+      - /app/apps/web/node_modules
+
+  web:
+    container_name: my-app-web
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: ${DOCKER_STAGE:-development}
+    ports:
+      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${WEB_PORT:-3000}
+      - BE_PORT=${BE_PORT:-3001}
+      - BACKEND_URL=http://be:${BE_PORT:-3001}
+      - VITE_API_URL=http://localhost:${BE_PORT:-3001}
+      - CI=true
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/be/node_modules
+      - /app/apps/web/node_modules
+    depends_on:
+      - be

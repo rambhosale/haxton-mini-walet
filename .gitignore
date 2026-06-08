@@ -1,0 +1,8 @@
+node_modules
+.pnpm-store
+.turbo/cache
+apps/be/.turbo
+apps/web/.turbo
+apps/be/dist
+apps/be/src/generated/prisma
+apps/be/dev.db
